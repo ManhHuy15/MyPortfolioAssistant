@@ -14,8 +14,50 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  ci:
-    name: Rust Check, Test & Clippy
+  lint:
+    name: Format & Clippy
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache Cargo dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: rust-native
+
+      - name: Check formatting
+        run: cargo fmt --check
+
+      - name: Run clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+  test:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: rust-native
+
+      - name: Run unit tests
+        run: cargo test --workspace
+
+  wasm-check:
+    name: Wasm Build Check
+    needs: [lint, test]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -25,26 +67,18 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
-          components: rustfmt, clippy
 
       - name: Cache Cargo dependencies
         uses: Swatinem/rust-cache@v2
-
-      - name: Check formatting
-        run: cargo fmt --check
-
-      - name: Run unit tests
-        run: cargo test --workspace
-
-      - name: Run clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        with:
+          shared-key: rust-wasm
 
       - name: Check Wasm target
         run: cargo check --target wasm32-unknown-unknown --workspace
 
   deploy:
     name: Deploy to Cloudflare Workers
-    needs: ci
+    needs: [wasm-check]
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
@@ -58,6 +92,8 @@ jobs:
 
       - name: Cache Cargo dependencies
         uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: rust-wasm
 
       - name: Cache worker-build binary
         id: cache-worker-build
