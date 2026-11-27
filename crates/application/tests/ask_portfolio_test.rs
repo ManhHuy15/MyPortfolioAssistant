@@ -1,4 +1,4 @@
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -59,7 +59,14 @@ impl ChatRepositoryPort for MockRepo {
     }
 
     async fn upsert_chunks_batch(&self, chunks: &[KnowledgeChunk]) -> Result<(), DomainError> {
-        self.chunks.borrow_mut().extend_from_slice(chunks);
+        let mut store = self.chunks.borrow_mut();
+        for chunk in chunks {
+            if let Some(existing) = store.iter_mut().find(|c| c.id == chunk.id) {
+                *existing = chunk.clone();
+            } else {
+                store.push(chunk.clone());
+            }
+        }
         Ok(())
     }
 
@@ -131,24 +138,45 @@ impl VectorIndexPort for MockVectorIndex {
     }
 }
 
-#[derive(Default)]
 struct MockCache {
-    cached: RefCell<Option<CachedAnswer>>,
+    entries: RefCell<HashMap<String, CachedAnswer>>,
+    version: Cell<u64>,
+}
+
+impl Default for MockCache {
+    fn default() -> Self {
+        Self {
+            entries: RefCell::new(HashMap::new()),
+            version: Cell::new(1),
+        }
+    }
 }
 
 #[async_trait(?Send)]
 impl AnswerCachePort for MockCache {
-    async fn get_cached_answer(&self, _key: &str) -> Result<Option<CachedAnswer>, DomainError> {
-        Ok(self.cached.borrow().clone())
+    async fn get_cache_version(&self) -> Result<u64, DomainError> {
+        Ok(self.version.get())
+    }
+
+    async fn bump_cache_version(&self) -> Result<u64, DomainError> {
+        let next = self.version.get() + 1;
+        self.version.set(next);
+        Ok(next)
+    }
+
+    async fn get_cached_answer(&self, key: &str) -> Result<Option<CachedAnswer>, DomainError> {
+        Ok(self.entries.borrow().get(key).cloned())
     }
 
     async fn set_cached_answer(
         &self,
-        _key: &str,
+        key: &str,
         answer: &CachedAnswer,
         _ttl_seconds: u64,
     ) -> Result<(), DomainError> {
-        *self.cached.borrow_mut() = Some(answer.clone());
+        self.entries
+            .borrow_mut()
+            .insert(key.to_string(), answer.clone());
         Ok(())
     }
 }
@@ -331,7 +359,8 @@ fn test_ingest_markdown_full_breadcrumb_and_code_block_safety() {
     let ai = Rc::new(MockAi {
         response: String::new(),
     });
-    let use_case = IngestMarkdownUseCase::new(repo.clone(), vector_index.clone(), ai);
+    let cache = Rc::new(MockCache::default());
+    let use_case = IngestMarkdownUseCase::new(repo.clone(), vector_index.clone(), ai, cache);
 
     let markdown = "\
 # Hồ sơ Mạnh Huy
@@ -470,7 +499,7 @@ fn test_ask_portfolio_stream_tokens_and_final_done_event() {
     }
 
     assert_eq!(repo.saved_messages.borrow().len(), 2);
-    assert!(cache.cached.borrow().is_some());
+    assert!(!cache.entries.borrow().is_empty());
 }
 
 #[test]
@@ -499,7 +528,8 @@ fn test_manage_knowledge_list_and_delete_by_prefix_and_not_found() {
         ]),
     });
     let vector_index = Rc::new(MockVectorIndex::default());
-    let use_case = ManageKnowledgeUseCase::new(repo.clone(), vector_index.clone());
+    let cache = Rc::new(MockCache::default());
+    let use_case = ManageKnowledgeUseCase::new(repo.clone(), vector_index.clone(), cache.clone());
 
     let listed = block_on(use_case.list_chunks()).expect("list should succeed");
     assert_eq!(listed.len(), 3);
@@ -574,4 +604,86 @@ fn test_rate_limit_blocks_by_session_and_by_ip() {
 
     // Different IP + different session is still allowed
     assert!(block_on(use_case.execute(make_cmd("sess-c", "2.2.2.2"))).is_ok());
+}
+
+#[test]
+fn test_reingest_cleans_stale_chunks_and_invalidates_cache() {
+    let repo = Rc::new(MockRepo::default());
+    let vector_index = Rc::new(MockVectorIndex::default());
+    let cache = Rc::new(MockCache::default());
+    let ai = Rc::new(MockAi {
+        response: "Câu trả lời mới nhất".to_string(),
+    });
+    let rate_limiter = Rc::new(MockRateLimiter::default());
+
+    let ingest = IngestMarkdownUseCase::new(
+        repo.clone(),
+        vector_index.clone(),
+        ai.clone(),
+        cache.clone(),
+    );
+    let ask = AskPortfolioUseCase::new(
+        repo.clone(),
+        vector_index.clone(),
+        cache.clone(),
+        ai,
+        rate_limiter,
+        RagConfig::default(),
+        RateLimitConfig::default(),
+    );
+
+    // 1. Initial ingest creates 3 chunks: portfolio-1, portfolio-2, portfolio-3
+    let v1_md = "# Phần 1\nNội dung 1\n\n## Phần 2\nNội dung 2\n\n## Phần 3\nNội dung 3";
+    let res1 = block_on(ingest.execute(IngestMarkdownCommand {
+        doc_id_prefix: "portfolio".to_string(),
+        default_doc_title: None,
+        category: "profile".to_string(),
+        markdown_content: v1_md.to_string(),
+        max_chunk_chars: 1200,
+        overlap_chars: 150,
+    }))
+    .expect("first ingest should succeed");
+    assert_eq!(res1.chunks_created, 3);
+    assert_eq!(cache.version.get(), 2);
+
+    // 2. Ask once -> caches under v2; ask again -> cache hit
+    let cmd = AskPortfolioCommand {
+        session: SessionMeta {
+            session_id: "sess-reingest".to_string(),
+            ip_address: "10.0.0.1".to_string(),
+            country: "VN".to_string(),
+            user_agent: None,
+        },
+        question: "Cho tôi xem thông tin".to_string(),
+    };
+    let first_ask = block_on(ask.execute(cmd.clone())).expect("ask 1 should succeed");
+    assert!(!first_ask.is_cached);
+    let second_ask = block_on(ask.execute(cmd.clone())).expect("ask 2 should succeed");
+    assert!(second_ask.is_cached);
+
+    // 3. Re-ingest shorter document (only 1 chunk: portfolio-1)
+    let v2_md = "# Phần mới\nChỉ còn 1 đoạn duy nhất.";
+    let res2 = block_on(ingest.execute(IngestMarkdownCommand {
+        doc_id_prefix: "portfolio".to_string(),
+        default_doc_title: None,
+        category: "profile".to_string(),
+        markdown_content: v2_md.to_string(),
+        max_chunk_chars: 1200,
+        overlap_chars: 150,
+    }))
+    .expect("second ingest should succeed");
+    assert_eq!(res2.chunks_created, 1);
+
+    // Stale chunks (portfolio-2, portfolio-3) must be deleted from both D1 and Vectorize
+    assert_eq!(repo.chunks.borrow().len(), 1);
+    assert_eq!(repo.chunks.borrow()[0].id, "portfolio-1");
+    assert_eq!(
+        *vector_index.deleted_ids.borrow(),
+        vec!["portfolio-2".to_string(), "portfolio-3".to_string()]
+    );
+
+    // Cache version bumped to 3 -> previous cached answer is invalidated immediately
+    assert_eq!(cache.version.get(), 3);
+    let after_reingest = block_on(ask.execute(cmd)).expect("ask 3 should succeed");
+    assert!(!after_reingest.is_cached);
 }

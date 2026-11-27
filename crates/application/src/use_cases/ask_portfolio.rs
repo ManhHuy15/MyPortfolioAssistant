@@ -70,14 +70,14 @@ impl AskPortfolioUseCase {
         }
     }
 
-    pub fn normalize_cache_key(question: &str) -> String {
+    pub fn normalize_cache_key(version: u64, question: &str) -> String {
         let normalized = question
             .trim()
             .to_lowercase()
             .split_whitespace()
             .collect::<Vec<_>>()
             .join(" ");
-        format!("chat_cache:{normalized}")
+        format!("chat_cache:v{version}:{normalized}")
     }
 
     async fn prepare_chat(&self, cmd: AskPortfolioCommand) -> Result<PreparedChat, DomainError> {
@@ -173,8 +173,9 @@ impl AskPortfolioUseCase {
             }
         };
 
-        // 3. Check Workers KV Cache
-        let cache_key = Self::normalize_cache_key(&effective_question);
+        // 3. Check Workers KV Cache (scoped by cache_version)
+        let cache_version = self.cache.get_cache_version().await.unwrap_or(1);
+        let cache_key = Self::normalize_cache_key(cache_version, &effective_question);
         if let Ok(Some(cached)) = self.cache.get_cached_answer(&cache_key).await {
             self.repo
                 .save_message(&ChatMessageRecord {

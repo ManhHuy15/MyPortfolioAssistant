@@ -4,18 +4,27 @@ use async_trait::async_trait;
 use domain::entities::KnowledgeChunk;
 use domain::errors::DomainError;
 use domain::ports::inbound::{DeleteKnowledgeResult, ManageKnowledgeUseCasePort};
-use domain::ports::outbound::{ChatRepositoryPort, VectorIndexPort};
+use domain::ports::outbound::{AnswerCachePort, ChatRepositoryPort, VectorIndexPort};
 
 const DELETE_BATCH_SIZE: usize = 100;
 
 pub struct ManageKnowledgeUseCase {
     repo: Rc<dyn ChatRepositoryPort>,
     vector_index: Rc<dyn VectorIndexPort>,
+    cache: Rc<dyn AnswerCachePort>,
 }
 
 impl ManageKnowledgeUseCase {
-    pub fn new(repo: Rc<dyn ChatRepositoryPort>, vector_index: Rc<dyn VectorIndexPort>) -> Self {
-        Self { repo, vector_index }
+    pub fn new(
+        repo: Rc<dyn ChatRepositoryPort>,
+        vector_index: Rc<dyn VectorIndexPort>,
+        cache: Rc<dyn AnswerCachePort>,
+    ) -> Self {
+        Self {
+            repo,
+            vector_index,
+            cache,
+        }
     }
 }
 
@@ -46,6 +55,7 @@ impl ManageKnowledgeUseCasePort for ManageKnowledgeUseCase {
         }
 
         self.repo.delete_chunks_by_ids(&ids).await?;
+        let _ = self.cache.bump_cache_version().await;
 
         Ok(DeleteKnowledgeResult {
             target: target.to_string(),

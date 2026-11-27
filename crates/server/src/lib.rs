@@ -140,6 +140,7 @@ pub async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
             }
 
             let db = ctx.env.d1("DB")?;
+            let kv = ctx.env.kv("CACHE_KV")?;
             let ai = ctx.env.ai("AI")?;
             let vectorize = VectorizeIndexAdapter::from_env(&ctx.env, "VECTORIZE")
                 .map_err(|e| Error::RustError(e.to_string()))?;
@@ -148,8 +149,9 @@ pub async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
             let repo = Rc::new(D1ChatRepository::new(db));
             let vector_index = Rc::new(vectorize);
             let ai_adapter = Rc::new(WorkersAiCompletion::new(ai, ai_config));
+            let cache = Rc::new(KvAnswerCache::new(kv));
 
-            let use_case = IngestMarkdownUseCase::new(repo, vector_index, ai_adapter);
+            let use_case = IngestMarkdownUseCase::new(repo, vector_index, ai_adapter, cache);
             handle_ingest_markdown(req, &use_case).await
         })
         .post_async("/api/chat", |req, ctx| async move {
@@ -202,11 +204,13 @@ fn build_ask_use_case(env: &Env) -> Result<AskPortfolioUseCase> {
 
 fn build_manage_knowledge_use_case(env: &Env) -> Result<ManageKnowledgeUseCase> {
     let db = env.d1("DB")?;
+    let kv = env.kv("CACHE_KV")?;
     let vectorize = VectorizeIndexAdapter::from_env(env, "VECTORIZE")
         .map_err(|e| Error::RustError(e.to_string()))?;
 
     let repo = Rc::new(D1ChatRepository::new(db));
     let vector_index = Rc::new(vectorize);
+    let cache = Rc::new(KvAnswerCache::new(kv));
 
-    Ok(ManageKnowledgeUseCase::new(repo, vector_index))
+    Ok(ManageKnowledgeUseCase::new(repo, vector_index, cache))
 }

@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::rc::Rc;
 
 use async_trait::async_trait;
@@ -6,7 +7,7 @@ use domain::ports::inbound::{
     IngestMarkdownCommand, IngestMarkdownResult, IngestMarkdownUseCasePort,
 };
 use domain::ports::outbound::{
-    AiCompletionPort, ChatRepositoryPort, VectorIndexPort, VectorRecord,
+    AiCompletionPort, AnswerCachePort, ChatRepositoryPort, VectorIndexPort, VectorRecord,
 };
 
 pub use super::markdown_chunker::{DEFAULT_MAX_CHUNK_CHARS, DEFAULT_OVERLAP_CHARS, chunk_markdown};
@@ -17,6 +18,7 @@ pub struct IngestMarkdownUseCase {
     repo: Rc<dyn ChatRepositoryPort>,
     vector_index: Rc<dyn VectorIndexPort>,
     ai: Rc<dyn AiCompletionPort>,
+    cache: Rc<dyn AnswerCachePort>,
 }
 
 impl IngestMarkdownUseCase {
@@ -24,11 +26,13 @@ impl IngestMarkdownUseCase {
         repo: Rc<dyn ChatRepositoryPort>,
         vector_index: Rc<dyn VectorIndexPort>,
         ai: Rc<dyn AiCompletionPort>,
+        cache: Rc<dyn AnswerCachePort>,
     ) -> Self {
         Self {
             repo,
             vector_index,
             ai,
+            cache,
         }
     }
 }
@@ -80,6 +84,9 @@ impl IngestMarkdownUseCasePort for IngestMarkdownUseCase {
             });
         }
 
+        // Snapshot existing chunk IDs for this doc_id_prefix so we can clean up stale ones after upsert
+        let existing_ids = self.repo.find_chunk_ids_by_target(&doc_id_prefix).await?;
+
         // Contextual Header Injection: attach full heading breadcrumb + category before embedding
         let texts_to_embed: Vec<String> = chunks
             .iter()
@@ -108,6 +115,7 @@ impl IngestMarkdownUseCasePort for IngestMarkdownUseCase {
 
         let dimensions = all_embeddings.first().map(Vec::len).unwrap_or(0);
 
+        // Upsert new chunks & vectors first (zero-downtime if embedding/upsert fails)
         self.repo.upsert_chunks_batch(&chunks).await?;
 
         let vector_records: Vec<VectorRecord> = chunks
@@ -124,6 +132,23 @@ impl IngestMarkdownUseCasePort for IngestMarkdownUseCase {
         for batch in vector_records.chunks(EMBED_BATCH_SIZE) {
             self.vector_index.upsert_vectors_batch(batch).await?;
         }
+
+        // Reconcile: remove any leftover stale chunks from previous versions of this document
+        let new_id_set: HashSet<&str> = chunks.iter().map(|c| c.id.as_str()).collect();
+        let stale_ids: Vec<String> = existing_ids
+            .into_iter()
+            .filter(|id| !new_id_set.contains(id.as_str()))
+            .collect();
+
+        if !stale_ids.is_empty() {
+            for batch in stale_ids.chunks(EMBED_BATCH_SIZE) {
+                self.vector_index.delete_vectors_by_ids(batch).await?;
+            }
+            self.repo.delete_chunks_by_ids(&stale_ids).await?;
+        }
+
+        // Immediately invalidate cached answers via namespace version bump
+        let _ = self.cache.bump_cache_version().await;
 
         Ok(IngestMarkdownResult {
             chunks_created: chunks.len(),
