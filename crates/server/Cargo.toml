@@ -1,0 +1,15 @@
+[package]
+name = "server"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+common = { path = "../common" }
+domain = { path = "../domain" }
+application = { path = "../application" }
+adapters = { path = "../adapters" }
+worker.workspace = true
+console_error_panic_hook.workspace = true

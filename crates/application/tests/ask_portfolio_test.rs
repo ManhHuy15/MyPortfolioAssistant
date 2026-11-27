@@ -1,0 +1,391 @@
+use std::cell::RefCell;
+use std::rc::Rc;
+
+use application::use_cases::ask_portfolio::AskPortfolioUseCase;
+use application::use_cases::ingest_markdown::IngestMarkdownUseCase;
+use application::use_cases::markdown_chunker::chunk_markdown;
+use async_trait::async_trait;
+use common::config::RagConfig;
+use domain::entities::{CachedAnswer, ChatMessageRecord, KnowledgeChunk, SessionMeta};
+use domain::errors::DomainError;
+use domain::ports::inbound::{
+    AskPortfolioCommand, AskPortfolioUseCasePort, ChatStreamEvent, IngestMarkdownCommand,
+    IngestMarkdownUseCasePort,
+};
+use domain::ports::outbound::{
+    AiCompletionPort, AnswerCachePort, ChatRepositoryPort, TokenStream, VectorIndexPort,
+    VectorMatch, VectorRecord,
+};
+use futures::executor::block_on;
+use futures_util::StreamExt;
+
+#[derive(Default)]
+struct MockRepo {
+    saved_messages: RefCell<Vec<ChatMessageRecord>>,
+    chunks: RefCell<Vec<KnowledgeChunk>>,
+}
+
+#[async_trait(?Send)]
+impl ChatRepositoryPort for MockRepo {
+    async fn upsert_session(&self, _session: &SessionMeta) -> Result<(), DomainError> {
+        Ok(())
+    }
+
+    async fn save_message(&self, message: &ChatMessageRecord) -> Result<(), DomainError> {
+        self.saved_messages.borrow_mut().push(message.clone());
+        Ok(())
+    }
+
+    async fn fetch_recent_messages(
+        &self,
+        session_id: &str,
+        limit: usize,
+    ) -> Result<Vec<ChatMessageRecord>, DomainError> {
+        let msgs: Vec<ChatMessageRecord> = self
+            .saved_messages
+            .borrow()
+            .iter()
+            .filter(|m| m.session_id == session_id)
+            .rev()
+            .take(limit)
+            .cloned()
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect();
+        Ok(msgs)
+    }
+
+    async fn upsert_chunks_batch(&self, chunks: &[KnowledgeChunk]) -> Result<(), DomainError> {
+        self.chunks.borrow_mut().extend_from_slice(chunks);
+        Ok(())
+    }
+
+    async fn fetch_chunks_by_ids(
+        &self,
+        ids: &[String],
+    ) -> Result<Vec<KnowledgeChunk>, DomainError> {
+        let all = self.chunks.borrow();
+        let matched = ids
+            .iter()
+            .filter_map(|id| all.iter().find(|c| &c.id == id).cloned())
+            .collect();
+        Ok(matched)
+    }
+
+    async fn fetch_recent_chunks(&self, _limit: usize) -> Result<Vec<KnowledgeChunk>, DomainError> {
+        Ok(self.chunks.borrow().clone())
+    }
+}
+
+#[derive(Default)]
+struct MockVectorIndex {
+    upserted_records: RefCell<Vec<VectorRecord>>,
+    matches: Vec<VectorMatch>,
+}
+
+#[async_trait(?Send)]
+impl VectorIndexPort for MockVectorIndex {
+    async fn upsert_vectors_batch(&self, records: &[VectorRecord]) -> Result<(), DomainError> {
+        self.upserted_records
+            .borrow_mut()
+            .extend_from_slice(records);
+        Ok(())
+    }
+
+    async fn query_top_k(
+        &self,
+        _vector: &[f32],
+        _top_k: usize,
+    ) -> Result<Vec<VectorMatch>, DomainError> {
+        Ok(self.matches.clone())
+    }
+}
+
+#[derive(Default)]
+struct MockCache {
+    cached: RefCell<Option<CachedAnswer>>,
+}
+
+#[async_trait(?Send)]
+impl AnswerCachePort for MockCache {
+    async fn get_cached_answer(&self, _key: &str) -> Result<Option<CachedAnswer>, DomainError> {
+        Ok(self.cached.borrow().clone())
+    }
+
+    async fn set_cached_answer(
+        &self,
+        _key: &str,
+        answer: &CachedAnswer,
+        _ttl_seconds: u64,
+    ) -> Result<(), DomainError> {
+        *self.cached.borrow_mut() = Some(answer.clone());
+        Ok(())
+    }
+}
+
+struct MockAi {
+    response: String,
+}
+
+#[async_trait(?Send)]
+impl AiCompletionPort for MockAi {
+    async fn embed_texts(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, DomainError> {
+        Ok(texts.iter().map(|_| vec![0.1; 1024]).collect())
+    }
+
+    async fn rewrite_question(
+        &self,
+        _recent_messages: &[ChatMessageRecord],
+        user_question: &str,
+    ) -> Result<String, DomainError> {
+        Ok(user_question.to_string())
+    }
+
+    async fn generate_reply(
+        &self,
+        _system_prompt: &str,
+        _user_question: &str,
+    ) -> Result<String, DomainError> {
+        Ok(self.response.clone())
+    }
+
+    async fn generate_reply_stream(
+        &self,
+        _system_prompt: &str,
+        _user_question: &str,
+    ) -> Result<TokenStream, DomainError> {
+        let tokens: Vec<Result<String, DomainError>> = self
+            .response
+            .split_inclusive(' ')
+            .map(|part| Ok(part.to_string()))
+            .collect();
+        Ok(Box::pin(futures_util::stream::iter(tokens)))
+    }
+}
+
+#[test]
+fn test_validation_empty_message() {
+    let repo = Rc::new(MockRepo::default());
+    let vector_index = Rc::new(MockVectorIndex::default());
+    let cache = Rc::new(MockCache::default());
+    let ai = Rc::new(MockAi {
+        response: "Hi".to_string(),
+    });
+    let use_case = AskPortfolioUseCase::new(repo, vector_index, cache, ai, RagConfig::default());
+
+    let cmd = AskPortfolioCommand {
+        session: SessionMeta {
+            session_id: "sess-1".to_string(),
+            ip_address: "127.0.0.1".to_string(),
+            country: "VN".to_string(),
+            user_agent: None,
+        },
+        question: "   ".to_string(),
+    };
+
+    let res = block_on(use_case.execute(cmd));
+    assert!(matches!(
+        res,
+        Err(DomainError::Validation { field, .. }) if field == "message"
+    ));
+}
+
+#[test]
+fn test_ask_portfolio_rag_with_vectorize_and_cache() {
+    let repo = Rc::new(MockRepo {
+        saved_messages: RefCell::new(Vec::new()),
+        chunks: RefCell::new(vec![
+            KnowledgeChunk {
+                id: "chunk-1".to_string(),
+                doc_title: "Dự án YuhTube".to_string(),
+                category: "project".to_string(),
+                content: "Ứng dụng xem video".to_string(),
+            },
+            KnowledgeChunk {
+                id: "chunk-2".to_string(),
+                doc_title: "Kỹ năng Rust".to_string(),
+                category: "skill".to_string(),
+                content: "Hexagonal Architecture trên Cloudflare Workers".to_string(),
+            },
+        ]),
+    });
+    let vector_index = Rc::new(MockVectorIndex {
+        upserted_records: RefCell::new(Vec::new()),
+        matches: vec![VectorMatch {
+            id: "chunk-1".to_string(),
+            score: 0.89,
+        }],
+    });
+    let cache = Rc::new(MockCache::default());
+    let ai = Rc::new(MockAi {
+        response: "Huy đã làm dự án YuhTube.".to_string(),
+    });
+    let use_case =
+        AskPortfolioUseCase::new(repo.clone(), vector_index, cache, ai, RagConfig::default());
+
+    let cmd = AskPortfolioCommand {
+        session: SessionMeta {
+            session_id: "sess-1".to_string(),
+            ip_address: "127.0.0.1".to_string(),
+            country: "VN".to_string(),
+            user_agent: None,
+        },
+        question: "Huy có dự án nào?".to_string(),
+    };
+
+    let first = block_on(use_case.execute(cmd.clone())).expect("should succeed");
+    assert!(!first.is_cached);
+    assert_eq!(first.reply, "Huy đã làm dự án YuhTube.");
+    assert_eq!(first.sources, vec!["Dự án YuhTube".to_string()]);
+
+    let second = block_on(use_case.execute(cmd)).expect("should succeed");
+    assert!(second.is_cached);
+    assert_eq!(second.reply, "Huy đã làm dự án YuhTube.");
+    assert_eq!(repo.saved_messages.borrow().len(), 4);
+}
+
+#[test]
+fn test_ingest_markdown_full_breadcrumb_and_code_block_safety() {
+    let repo = Rc::new(MockRepo::default());
+    let vector_index = Rc::new(MockVectorIndex::default());
+    let ai = Rc::new(MockAi {
+        response: String::new(),
+    });
+    let use_case = IngestMarkdownUseCase::new(repo.clone(), vector_index.clone(), ai);
+
+    let markdown = "\
+# Hồ sơ Mạnh Huy
+Kỹ sư phần mềm chuyên về Rust và hệ thống phân tán.
+
+## Dự án nổi bật
+### YuhTube
+Xây dựng nền tảng chia sẻ video hiệu năng cao.
+
+```bash
+# This comment must NOT be treated as a Markdown heading
+cargo test --workspace
+```
+
+## Kỹ năng Cloud
+Triển khai serverless trên Cloudflare Workers, D1, KV và Vectorize.
+";
+
+    let cmd = IngestMarkdownCommand {
+        doc_id_prefix: "portfolio-md".to_string(),
+        default_doc_title: Some("Portfolio".to_string()),
+        category: "profile".to_string(),
+        markdown_content: markdown.to_string(),
+        max_chunk_chars: 1200,
+        overlap_chars: 150,
+    };
+
+    let res = block_on(use_case.execute(cmd)).expect("markdown ingest should succeed");
+    assert_eq!(res.chunks_created, 3);
+    assert_eq!(res.dimensions, 1024);
+
+    let saved_chunks = repo.chunks.borrow();
+    assert_eq!(saved_chunks[0].doc_title, "Hồ sơ Mạnh Huy");
+    assert_eq!(
+        saved_chunks[1].doc_title,
+        "Hồ sơ Mạnh Huy > Dự án nổi bật > YuhTube"
+    );
+    assert!(saved_chunks[1].content.contains("# This comment must NOT"));
+    assert_eq!(saved_chunks[2].doc_title, "Hồ sơ Mạnh Huy > Kỹ năng Cloud");
+
+    let saved_vectors = vector_index.upserted_records.borrow();
+    assert_eq!(saved_vectors.len(), 3);
+    assert_eq!(saved_vectors[0].values.len(), 1024);
+}
+
+#[test]
+fn test_sentence_boundary_chunking_does_not_cut_mid_sentence() {
+    let markdown = "\
+# Giới thiệu
+Đây là câu đầu tiên rất rõ ràng về kinh nghiệm Rust. Đây là câu thứ hai nói về Cloudflare Workers và D1. Đây là câu thứ ba mô tả Vectorize RAG với mô hình bge-m3.
+";
+    let chunks = chunk_markdown("intro", None, "profile", markdown, 110, 50);
+    assert!(chunks.len() >= 2);
+    for chunk in &chunks {
+        assert!(
+            chunk.content.ends_with('.'),
+            "chunk should end on a sentence boundary: {}",
+            chunk.content
+        );
+    }
+}
+
+#[test]
+fn test_ask_portfolio_stream_tokens_and_final_done_event() {
+    let repo = Rc::new(MockRepo {
+        saved_messages: RefCell::new(Vec::new()),
+        chunks: RefCell::new(vec![KnowledgeChunk {
+            id: "chunk-1".to_string(),
+            doc_title: "Dự án YuhTube".to_string(),
+            category: "project".to_string(),
+            content: "Ứng dụng xem video".to_string(),
+        }]),
+    });
+    let vector_index = Rc::new(MockVectorIndex {
+        upserted_records: RefCell::new(Vec::new()),
+        matches: vec![VectorMatch {
+            id: "chunk-1".to_string(),
+            score: 0.91,
+        }],
+    });
+    let cache = Rc::new(MockCache::default());
+    let ai = Rc::new(MockAi {
+        response: "Huy làm dự án YuhTube.".to_string(),
+    });
+    let use_case = AskPortfolioUseCase::new(
+        repo.clone(),
+        vector_index,
+        cache.clone(),
+        ai,
+        RagConfig::default(),
+    );
+
+    let cmd = AskPortfolioCommand {
+        session: SessionMeta {
+            session_id: "sess-stream".to_string(),
+            ip_address: "127.0.0.1".to_string(),
+            country: "VN".to_string(),
+            user_agent: None,
+        },
+        question: "Huy làm dự án gì?".to_string(),
+    };
+
+    let events: Vec<ChatStreamEvent> = block_on(async {
+        let mut stream = use_case
+            .execute_stream(cmd)
+            .await
+            .expect("stream should start");
+        let mut collected = Vec::new();
+        while let Some(item) = stream.next().await {
+            collected.push(item.expect("event should be ok"));
+        }
+        collected
+    });
+
+    assert!(events.len() >= 2);
+    let mut combined = String::new();
+    for event in &events[..events.len() - 1] {
+        match event {
+            ChatStreamEvent::Token(tok) => combined.push_str(tok),
+            other => panic!("expected Token event, got {other:?}"),
+        }
+    }
+    assert_eq!(combined, "Huy làm dự án YuhTube.");
+
+    match events.last() {
+        Some(ChatStreamEvent::Done(final_res)) => {
+            assert_eq!(final_res.reply, "Huy làm dự án YuhTube.");
+            assert_eq!(final_res.sources, vec!["Dự án YuhTube".to_string()]);
+            assert!(!final_res.is_cached);
+        }
+        other => panic!("expected Done event last, got {other:?}"),
+    }
+
+    assert_eq!(repo.saved_messages.borrow().len(), 2);
+    assert!(cache.cached.borrow().is_some());
+}

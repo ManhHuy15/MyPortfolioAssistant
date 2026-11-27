@@ -1,0 +1,27 @@
+{
+  "name": "myportfolioassistant",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "db:local": "wrangler d1 execute DB --local --file=./db/schema.sql",
+    "db:remote": "wrangler d1 execute DB --remote --file=./db/schema.sql"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ManhHuy15/MyPortfolioAssistant.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/ManhHuy15/MyPortfolioAssistant/issues"
+  },
+  "homepage": "https://github.com/ManhHuy15/MyPortfolioAssistant#readme",
+  "devDependencies": {
+    "wrangler": "^4.168.0"
+  }
+}

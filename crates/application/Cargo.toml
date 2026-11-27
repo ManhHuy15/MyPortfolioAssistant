@@ -1,0 +1,15 @@
+[package]
+name = "application"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+common = { path = "../common" }
+domain = { path = "../domain" }
+serde.workspace = true
+thiserror.workspace = true
+async-trait.workspace = true
+futures-util.workspace = true
+
+[dev-dependencies]
+futures = "0.3"
