@@ -19,6 +19,11 @@ impl D1ChatRepository {
 }
 
 #[derive(Debug, Deserialize)]
+struct ChunkIdRow {
+    id: String,
+}
+
+#[derive(Debug, Deserialize)]
 struct ChunkRow {
     id: String,
     doc_title: String,
@@ -251,5 +256,77 @@ impl ChatRepositoryPort for D1ChatRepository {
                 content: r.content,
             })
             .collect())
+    }
+
+    async fn list_chunks(&self) -> Result<Vec<KnowledgeChunk>, DomainError> {
+        let rows = self
+            .db
+            .prepare(
+                "SELECT id, doc_title, category, content FROM chunks ORDER BY updated_at DESC, id ASC",
+            )
+            .all()
+            .await
+            .map_err(|e| DomainError::Storage(e.to_string()))?
+            .results::<ChunkRow>()
+            .map_err(|e| DomainError::Storage(e.to_string()))?;
+
+        Ok(rows
+            .into_iter()
+            .map(|r| KnowledgeChunk {
+                id: r.id,
+                doc_title: r.doc_title,
+                category: r.category,
+                content: r.content,
+            })
+            .collect())
+    }
+
+    async fn find_chunk_ids_by_target(&self, target: &str) -> Result<Vec<String>, DomainError> {
+        let escaped = target
+            .replace('\\', "\\\\")
+            .replace('%', "\\%")
+            .replace('_', "\\_");
+        let prefix_pattern = format!("{escaped}-%");
+
+        let rows = self
+            .db
+            .prepare(
+                "SELECT id FROM chunks WHERE id = ?1 OR id LIKE ?2 ESCAPE '\\' ORDER BY id ASC",
+            )
+            .bind(&[target.into(), prefix_pattern.into()])
+            .map_err(|e| DomainError::Storage(e.to_string()))?
+            .all()
+            .await
+            .map_err(|e| DomainError::Storage(e.to_string()))?
+            .results::<ChunkIdRow>()
+            .map_err(|e| DomainError::Storage(e.to_string()))?;
+
+        Ok(rows.into_iter().map(|r| r.id).collect())
+    }
+
+    async fn delete_chunks_by_ids(&self, ids: &[String]) -> Result<(), DomainError> {
+        if ids.is_empty() {
+            return Ok(());
+        }
+
+        for batch in ids.chunks(50) {
+            let placeholders: Vec<String> = (1..=batch.len()).map(|i| format!("?{i}")).collect();
+            let sql = format!(
+                "DELETE FROM chunks WHERE id IN ({})",
+                placeholders.join(", ")
+            );
+            let bind_values: Vec<JsValue> =
+                batch.iter().map(|id| JsValue::from(id.as_str())).collect();
+
+            self.db
+                .prepare(&sql)
+                .bind(&bind_values)
+                .map_err(|e| DomainError::Storage(e.to_string()))?
+                .run()
+                .await
+                .map_err(|e| DomainError::Storage(e.to_string()))?;
+        }
+
+        Ok(())
     }
 }

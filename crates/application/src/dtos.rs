@@ -47,6 +47,21 @@ pub struct IngestMarkdownResponseDto {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+pub struct ListChunksResponseDto {
+    pub total: usize,
+    pub chunks: Vec<IngestedChunkItemDto>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DeleteKnowledgeResponseDto {
+    pub target: String,
+    pub deleted_count: usize,
+    pub deleted_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct HealthResponseDto {
     pub status: String,
     pub service: String,

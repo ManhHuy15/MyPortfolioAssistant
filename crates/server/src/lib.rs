@@ -1,13 +1,16 @@
 use std::rc::Rc;
 
 use adapters::inbound::http::{
-    handle_chat, handle_chat_stream, handle_health, handle_ingest_markdown, verify_api_key,
+    handle_chat, handle_chat_stream, handle_delete_knowledge, handle_health,
+    handle_ingest_markdown, handle_list_chunks, handle_openapi_spec, handle_swagger_ui,
+    verify_api_key,
 };
 use adapters::outbound::persistence::{
     D1ChatRepository, KvAnswerCache, VectorizeIndexAdapter, WorkersAiCompletion,
 };
 use application::use_cases::ask_portfolio::AskPortfolioUseCase;
 use application::use_cases::ingest_markdown::IngestMarkdownUseCase;
+use application::use_cases::manage_knowledge::ManageKnowledgeUseCase;
 use common::config::{AiConfig, RagConfig};
 use worker::*;
 
@@ -83,10 +86,31 @@ pub async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
     let router = Router::new();
 
     router
+        .get_async("/docs", |_req, _ctx| async move { handle_swagger_ui() })
+        .get_async("/api/openapi.json", |_req, _ctx| async move {
+            handle_openapi_spec()
+        })
         .get_async(
             "/api/health",
             |req, _ctx| async move { handle_health(&req) },
         )
+        .get_async("/api/chunks", |req, ctx| async move {
+            if let Err(resp) = verify_api_key(&req, &ctx.env) {
+                return Ok(resp);
+            }
+
+            let use_case = build_manage_knowledge_use_case(&ctx.env)?;
+            handle_list_chunks(&req, &use_case).await
+        })
+        .delete_async("/api/chunks/:target", |req, ctx| async move {
+            if let Err(resp) = verify_api_key(&req, &ctx.env) {
+                return Ok(resp);
+            }
+
+            let target = ctx.param("target").map(String::as_str).unwrap_or_default();
+            let use_case = build_manage_knowledge_use_case(&ctx.env)?;
+            handle_delete_knowledge(&req, target, &use_case).await
+        })
         .post_async("/api/chunks/markdown", |req, ctx| async move {
             if let Err(resp) = verify_api_key(&req, &ctx.env) {
                 return Ok(resp);
@@ -146,4 +170,15 @@ fn build_ask_use_case(env: &Env) -> Result<AskPortfolioUseCase> {
         ai_adapter,
         rag_config,
     ))
+}
+
+fn build_manage_knowledge_use_case(env: &Env) -> Result<ManageKnowledgeUseCase> {
+    let db = env.d1("DB")?;
+    let vectorize = VectorizeIndexAdapter::from_env(env, "VECTORIZE")
+        .map_err(|e| Error::RustError(e.to_string()))?;
+
+    let repo = Rc::new(D1ChatRepository::new(db));
+    let vector_index = Rc::new(vectorize);
+
+    Ok(ManageKnowledgeUseCase::new(repo, vector_index))
 }

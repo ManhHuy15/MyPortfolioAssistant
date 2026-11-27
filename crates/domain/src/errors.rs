@@ -5,6 +5,9 @@ pub enum DomainError {
     #[error("Validation error on field '{field}': {message}")]
     Validation { field: String, message: String },
 
+    #[error("Not found: {0}")]
+    NotFound(String),
+
     #[error("Storage error: {0}")]
     Storage(String),
 

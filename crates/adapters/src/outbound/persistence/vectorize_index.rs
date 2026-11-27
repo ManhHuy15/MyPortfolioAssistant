@@ -17,6 +17,9 @@ extern "C" {
 
     #[wasm_bindgen(structural, method, js_name = query)]
     fn query(this: &VectorizeIndexSys, vector: JsValue, options: JsValue) -> js_sys::Promise;
+
+    #[wasm_bindgen(structural, method, js_name = deleteByIds)]
+    fn delete_by_ids(this: &VectorizeIndexSys, ids: JsValue) -> js_sys::Promise;
 }
 
 pub struct VectorizeIndexAdapter {
@@ -135,5 +138,22 @@ impl VectorIndexPort for VectorizeIndexAdapter {
                 score: m.score,
             })
             .collect())
+    }
+
+    async fn delete_vectors_by_ids(&self, ids: &[String]) -> Result<(), DomainError> {
+        if ids.is_empty() {
+            return Ok(());
+        }
+
+        let js_ids = ids
+            .serialize(&serde_wasm_bindgen::Serializer::json_compatible())
+            .map_err(|e| DomainError::Storage(e.to_string()))?;
+
+        let promise = self.inner.delete_by_ids(js_ids);
+        JsFuture::from(promise)
+            .await
+            .map_err(|e| DomainError::Storage(format!("Vectorize deleteByIds error: {e:?}")))?;
+
+        Ok(())
     }
 }

@@ -3,6 +3,7 @@ use std::rc::Rc;
 
 use application::use_cases::ask_portfolio::AskPortfolioUseCase;
 use application::use_cases::ingest_markdown::IngestMarkdownUseCase;
+use application::use_cases::manage_knowledge::ManageKnowledgeUseCase;
 use application::use_cases::markdown_chunker::chunk_markdown;
 use async_trait::async_trait;
 use common::config::RagConfig;
@@ -10,7 +11,7 @@ use domain::entities::{CachedAnswer, ChatMessageRecord, KnowledgeChunk, SessionM
 use domain::errors::DomainError;
 use domain::ports::inbound::{
     AskPortfolioCommand, AskPortfolioUseCasePort, ChatStreamEvent, IngestMarkdownCommand,
-    IngestMarkdownUseCasePort,
+    IngestMarkdownUseCasePort, ManageKnowledgeUseCasePort,
 };
 use domain::ports::outbound::{
     AiCompletionPort, AnswerCachePort, ChatRepositoryPort, TokenStream, VectorIndexPort,
@@ -76,11 +77,33 @@ impl ChatRepositoryPort for MockRepo {
     async fn fetch_recent_chunks(&self, _limit: usize) -> Result<Vec<KnowledgeChunk>, DomainError> {
         Ok(self.chunks.borrow().clone())
     }
+
+    async fn list_chunks(&self) -> Result<Vec<KnowledgeChunk>, DomainError> {
+        Ok(self.chunks.borrow().clone())
+    }
+
+    async fn find_chunk_ids_by_target(&self, target: &str) -> Result<Vec<String>, DomainError> {
+        let prefix = format!("{target}-");
+        let ids = self
+            .chunks
+            .borrow()
+            .iter()
+            .filter(|c| c.id == target || c.id.starts_with(&prefix))
+            .map(|c| c.id.clone())
+            .collect();
+        Ok(ids)
+    }
+
+    async fn delete_chunks_by_ids(&self, ids: &[String]) -> Result<(), DomainError> {
+        self.chunks.borrow_mut().retain(|c| !ids.contains(&c.id));
+        Ok(())
+    }
 }
 
 #[derive(Default)]
 struct MockVectorIndex {
     upserted_records: RefCell<Vec<VectorRecord>>,
+    deleted_ids: RefCell<Vec<String>>,
     matches: Vec<VectorMatch>,
 }
 
@@ -99,6 +122,11 @@ impl VectorIndexPort for MockVectorIndex {
         _top_k: usize,
     ) -> Result<Vec<VectorMatch>, DomainError> {
         Ok(self.matches.clone())
+    }
+
+    async fn delete_vectors_by_ids(&self, ids: &[String]) -> Result<(), DomainError> {
+        self.deleted_ids.borrow_mut().extend_from_slice(ids);
+        Ok(())
     }
 }
 
@@ -212,6 +240,7 @@ fn test_ask_portfolio_rag_with_vectorize_and_cache() {
     });
     let vector_index = Rc::new(MockVectorIndex {
         upserted_records: RefCell::new(Vec::new()),
+        deleted_ids: RefCell::new(Vec::new()),
         matches: vec![VectorMatch {
             id: "chunk-1".to_string(),
             score: 0.89,
@@ -328,6 +357,7 @@ fn test_ask_portfolio_stream_tokens_and_final_done_event() {
     });
     let vector_index = Rc::new(MockVectorIndex {
         upserted_records: RefCell::new(Vec::new()),
+        deleted_ids: RefCell::new(Vec::new()),
         matches: vec![VectorMatch {
             id: "chunk-1".to_string(),
             score: 0.91,
@@ -388,4 +418,52 @@ fn test_ask_portfolio_stream_tokens_and_final_done_event() {
 
     assert_eq!(repo.saved_messages.borrow().len(), 2);
     assert!(cache.cached.borrow().is_some());
+}
+
+#[test]
+fn test_manage_knowledge_list_and_delete_by_prefix_and_not_found() {
+    let repo = Rc::new(MockRepo {
+        saved_messages: RefCell::new(Vec::new()),
+        chunks: RefCell::new(vec![
+            KnowledgeChunk {
+                id: "portfolio-1".to_string(),
+                doc_title: "Giới thiệu".to_string(),
+                category: "profile".to_string(),
+                content: "A".to_string(),
+            },
+            KnowledgeChunk {
+                id: "portfolio-2".to_string(),
+                doc_title: "Kỹ năng".to_string(),
+                category: "profile".to_string(),
+                content: "B".to_string(),
+            },
+            KnowledgeChunk {
+                id: "blog-1".to_string(),
+                doc_title: "Rust Wasm".to_string(),
+                category: "blog".to_string(),
+                content: "C".to_string(),
+            },
+        ]),
+    });
+    let vector_index = Rc::new(MockVectorIndex::default());
+    let use_case = ManageKnowledgeUseCase::new(repo.clone(), vector_index.clone());
+
+    let listed = block_on(use_case.list_chunks()).expect("list should succeed");
+    assert_eq!(listed.len(), 3);
+
+    let deleted = block_on(use_case.delete_by_target("portfolio")).expect("delete should succeed");
+    assert_eq!(deleted.deleted_count, 2);
+    assert_eq!(
+        deleted.deleted_ids,
+        vec!["portfolio-1".to_string(), "portfolio-2".to_string()]
+    );
+    assert_eq!(
+        *vector_index.deleted_ids.borrow(),
+        vec!["portfolio-1".to_string(), "portfolio-2".to_string()]
+    );
+    assert_eq!(repo.chunks.borrow().len(), 1);
+    assert_eq!(repo.chunks.borrow()[0].id, "blog-1");
+
+    let missing = block_on(use_case.delete_by_target("portfolio"));
+    assert!(matches!(missing, Err(DomainError::NotFound(_))));
 }

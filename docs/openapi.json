@@ -1,0 +1,424 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "MyPortfolioAssistant API",
+    "version": "1.0.0",
+    "description": "Portfolio AI Assistant backend built in Rust (WebAssembly) on Cloudflare Workers with D1, Workers KV, Vectorize, and Workers AI."
+  },
+  "servers": [
+    {
+      "url": "/",
+      "description": "Current Worker host"
+    }
+  ],
+  "tags": [
+    { "name": "System", "description": "Health check and API diagnostics" },
+    { "name": "Knowledge", "description": "Ingest, list, and delete RAG knowledge chunks" },
+    { "name": "Chat", "description": "RAG chat (JSON and SSE streaming)" }
+  ],
+  "components": {
+    "securitySchemes": {
+      "ApiKeyAuth": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "X-API-Key",
+        "description": "API key configured in Cloudflare secret `API_KEY` (or `.dev.vars` locally)."
+      }
+    },
+    "schemas": {
+      "ApiErrorItem": {
+        "type": "object",
+        "required": ["code", "message", "field"],
+        "properties": {
+          "code": { "type": "string", "example": "VALIDATION_FAILED" },
+          "message": { "type": "string", "example": "Message cannot be empty" },
+          "field": { "type": "string", "nullable": true, "example": "message" }
+        }
+      },
+      "ApiErrorResponse": {
+        "type": "object",
+        "required": ["success", "message", "data", "errors", "traceId"],
+        "properties": {
+          "success": { "type": "boolean", "example": false },
+          "message": { "type": "string", "example": "Invalid or missing API key" },
+          "data": { "type": "object", "nullable": true, "example": null },
+          "errors": {
+            "type": "array",
+            "nullable": true,
+            "items": { "$ref": "#/components/schemas/ApiErrorItem" }
+          },
+          "traceId": { "type": "string", "nullable": true, "example": "a60f88262d15850a" }
+        }
+      },
+      "HealthResponseDto": {
+        "type": "object",
+        "required": ["status", "service"],
+        "properties": {
+          "status": { "type": "string", "example": "healthy" },
+          "service": { "type": "string", "example": "my-portfolio-assistant" }
+        }
+      },
+      "IngestMarkdownRequestDto": {
+        "type": "object",
+        "required": ["docIdPrefix", "markdownContent"],
+        "properties": {
+          "docIdPrefix": { "type": "string", "example": "portfolio" },
+          "defaultDocTitle": { "type": "string", "nullable": true, "example": "Hồ sơ Mạnh Huy" },
+          "category": { "type": "string", "default": "general", "example": "profile" },
+          "markdownContent": {
+            "type": "string",
+            "example": "# Giới thiệu\nTôi là Huy, kỹ sư phần mềm chuyên Rust và Cloudflare Workers."
+          },
+          "maxChunkChars": { "type": "integer", "nullable": true, "example": 1200 },
+          "overlapChars": { "type": "integer", "nullable": true, "example": 150 }
+        }
+      },
+      "IngestedChunkItemDto": {
+        "type": "object",
+        "required": ["id", "docTitle", "category", "charCount"],
+        "properties": {
+          "id": { "type": "string", "example": "portfolio-1" },
+          "docTitle": { "type": "string", "example": "Hồ sơ Mạnh Huy > Dự án nổi bật" },
+          "category": { "type": "string", "example": "profile" },
+          "charCount": { "type": "integer", "example": 342 }
+        }
+      },
+      "IngestMarkdownResponseDto": {
+        "type": "object",
+        "required": ["chunksCreated", "dimensions", "chunks"],
+        "properties": {
+          "chunksCreated": { "type": "integer", "example": 3 },
+          "dimensions": { "type": "integer", "example": 1024 },
+          "chunks": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/IngestedChunkItemDto" }
+          }
+        }
+      },
+      "ListChunksResponseDto": {
+        "type": "object",
+        "required": ["total", "chunks"],
+        "properties": {
+          "total": { "type": "integer", "example": 3 },
+          "chunks": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/IngestedChunkItemDto" }
+          }
+        }
+      },
+      "DeleteKnowledgeResponseDto": {
+        "type": "object",
+        "required": ["target", "deletedCount", "deletedIds"],
+        "properties": {
+          "target": { "type": "string", "example": "portfolio" },
+          "deletedCount": { "type": "integer", "example": 3 },
+          "deletedIds": {
+            "type": "array",
+            "items": { "type": "string" },
+            "example": ["portfolio-1", "portfolio-2", "portfolio-3"]
+          }
+        }
+      },
+      "ChatRequestDto": {
+        "type": "object",
+        "required": ["sessionId", "message"],
+        "properties": {
+          "sessionId": { "type": "string", "example": "550e8400-e29b-41d4-a716-446655440000" },
+          "message": { "type": "string", "example": "Giới thiệu về các dự án nổi bật của Huy?" }
+        }
+      },
+      "ChatResponseDto": {
+        "type": "object",
+        "required": ["sessionId", "reply", "sources", "isCached"],
+        "properties": {
+          "sessionId": { "type": "string", "example": "550e8400-e29b-41d4-a716-446655440000" },
+          "reply": { "type": "string", "example": "Huy đã xây dựng dự án MyPortfolioAssistant bằng Rust và Cloudflare Workers." },
+          "sources": {
+            "type": "array",
+            "items": { "type": "string" },
+            "example": ["Hồ sơ Mạnh Huy > Dự án nổi bật"]
+          },
+          "isCached": { "type": "boolean", "example": false }
+        }
+      }
+    }
+  },
+  "paths": {
+    "/api/health": {
+      "get": {
+        "tags": ["System"],
+        "summary": "Health check",
+        "description": "Public endpoint to check Worker availability.",
+        "responses": {
+          "200": {
+            "description": "Service is healthy",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": { "type": "boolean", "example": true },
+                    "message": { "type": "string", "example": "OK" },
+                    "data": { "$ref": "#/components/schemas/HealthResponseDto" },
+                    "errors": { "type": "object", "nullable": true, "example": null },
+                    "traceId": { "type": "string", "nullable": true }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/chunks": {
+      "get": {
+        "tags": ["Knowledge"],
+        "summary": "List all knowledge chunks",
+        "security": [{ "ApiKeyAuth": [] }],
+        "responses": {
+          "200": {
+            "description": "List of indexed knowledge chunks",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": { "type": "boolean", "example": true },
+                    "message": { "type": "string", "example": "Success" },
+                    "data": { "$ref": "#/components/schemas/ListChunksResponseDto" },
+                    "errors": { "type": "object", "nullable": true, "example": null },
+                    "traceId": { "type": "string", "nullable": true }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ApiErrorResponse" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/chunks/markdown": {
+      "post": {
+        "tags": ["Knowledge"],
+        "summary": "Ingest Markdown document into D1 and Vectorize",
+        "description": "Chunks Markdown by heading hierarchy and sentence boundaries, embeds with `@cf/baai/bge-m3`, and upserts to D1 and Vectorize.",
+        "security": [{ "ApiKeyAuth": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/IngestMarkdownRequestDto" }
+            },
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "required": ["file"],
+                "properties": {
+                  "docIdPrefix": { "type": "string", "example": "portfolio" },
+                  "defaultDocTitle": { "type": "string", "example": "Hồ sơ Mạnh Huy" },
+                  "category": { "type": "string", "example": "profile" },
+                  "file": { "type": "string", "format": "binary" }
+                }
+              }
+            },
+            "text/markdown": {
+              "schema": {
+                "type": "string",
+                "example": "# Giới thiệu\nNội dung Markdown..."
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Markdown chunked and indexed successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": { "type": "boolean", "example": true },
+                    "message": { "type": "string", "example": "Markdown chunked and indexed successfully" },
+                    "data": { "$ref": "#/components/schemas/IngestMarkdownResponseDto" },
+                    "errors": { "type": "object", "nullable": true, "example": null },
+                    "traceId": { "type": "string", "nullable": true }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failed",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ApiErrorResponse" }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ApiErrorResponse" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/chunks/{target}": {
+      "delete": {
+        "tags": ["Knowledge"],
+        "summary": "Delete knowledge chunks from D1 and Vectorize",
+        "description": "Deletes either a single chunk by exact ID (e.g. `portfolio-2`) or an entire document by `docIdPrefix` (e.g. `portfolio`).",
+        "security": [{ "ApiKeyAuth": [] }],
+        "parameters": [
+          {
+            "name": "target",
+            "in": "path",
+            "required": true,
+            "description": "Exact chunk ID or docIdPrefix",
+            "schema": { "type": "string", "example": "portfolio" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Knowledge deleted successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": { "type": "boolean", "example": true },
+                    "message": { "type": "string", "example": "Knowledge deleted successfully" },
+                    "data": { "$ref": "#/components/schemas/DeleteKnowledgeResponseDto" },
+                    "errors": { "type": "object", "nullable": true, "example": null },
+                    "traceId": { "type": "string", "nullable": true }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ApiErrorResponse" }
+              }
+            }
+          },
+          "404": {
+            "description": "No matching knowledge found",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ApiErrorResponse" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/chat": {
+      "post": {
+        "tags": ["Chat"],
+        "summary": "Chat with Portfolio RAG assistant (JSON)",
+        "security": [{ "ApiKeyAuth": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/ChatRequestDto" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Assistant reply",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": { "type": "boolean", "example": true },
+                    "message": { "type": "string", "example": "Success" },
+                    "data": { "$ref": "#/components/schemas/ChatResponseDto" },
+                    "errors": { "type": "object", "nullable": true, "example": null },
+                    "traceId": { "type": "string", "nullable": true }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failed",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ApiErrorResponse" }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ApiErrorResponse" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/chat/stream": {
+      "post": {
+        "tags": ["Chat"],
+        "summary": "Chat with Portfolio RAG assistant (SSE token streaming)",
+        "description": "Streams `event: token` chunks while generating, followed by a final `event: done` containing the complete `ApiResponse<ChatResponseDto>`.",
+        "security": [{ "ApiKeyAuth": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/ChatRequestDto" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Server-Sent Events stream (`event: token`, `event: done`, `event: error`)",
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "type": "string",
+                  "example": "event: token\ndata: {\"token\":\"Xin \"}\n\nevent: done\ndata: {\"success\":true,\"message\":\"Success\",\"data\":{\"sessionId\":\"...\",\"reply\":\"Xin chào\",\"sources\":[],\"isCached\":false},\"errors\":null,\"traceId\":null}\n\n"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failed",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ApiErrorResponse" }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ApiErrorResponse" }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

@@ -87,6 +87,9 @@ openssl rand -hex 32
 
 ## Tài liệu API
 
+- **Swagger UI**: `GET /docs` (bấm **Authorize** và nhập `X-API-Key` để test trực tiếp trên trình duyệt)
+- **OpenAPI 3.0.3 Spec**: `GET /api/openapi.json` (có thể import thẳng vào Postman / Insomnia)
+
 Mọi response JSON đều tuân theo chuẩn `ApiResponse<T>` (`camelCase`, các trường `null` luôn được serialize rõ ràng):
 
 ```json
@@ -130,7 +133,25 @@ Nạp tài liệu Markdown, tự động cắt chunk theo ngữ cảnh, tạo em
   ```
 - **Gửi raw Markdown (`text/markdown` hoặc `text/plain`)**: truyền metadata qua query params `?docIdPrefix=profile&category=profile`.
 
-### 3. `POST /api/chat` *(Yêu cầu `X-API-Key`)*
+### 3. `GET /api/chunks` *(Yêu cầu `X-API-Key`)*
+Liệt kê toàn bộ danh sách knowledge chunks hiện đang lưu trong D1.
+
+```bash
+curl https://my-portfolio-assistant.nguyenmanhhuy-dev.workers.dev/api/chunks \
+  -H "X-API-Key: <API_KEY>"
+```
+
+### 4. `DELETE /api/chunks/:target` *(Yêu cầu `X-API-Key`)*
+Xóa đồng bộ knowledge ở cả **D1** và **Vectorize**. `:target` có thể là:
+- `docIdPrefix` (ví dụ `portfolio`) → xóa toàn bộ chunk `portfolio-1`, `portfolio-2`, ...
+- ID của 1 chunk lẻ (ví dụ `portfolio-2`) → chỉ xóa đúng chunk đó.
+
+```bash
+curl -X DELETE https://my-portfolio-assistant.nguyenmanhhuy-dev.workers.dev/api/chunks/portfolio \
+  -H "X-API-Key: <API_KEY>"
+```
+
+### 5. `POST /api/chat` *(Yêu cầu `X-API-Key`)*
 Hỏi đáp RAG trả về 1 response JSON hoàn chỉnh.
 
 ```bash
@@ -143,7 +164,7 @@ curl -X POST https://my-portfolio-assistant.nguyenmanhhuy-dev.workers.dev/api/ch
   }'
 ```
 
-### 4. `POST /api/chat/stream` *(Yêu cầu `X-API-Key`)*
+### 6. `POST /api/chat/stream` *(Yêu cầu `X-API-Key`)*
 Hỏi đáp RAG trả về từng chữ qua **Server-Sent Events (`text/event-stream`)**:
 
 ```bash

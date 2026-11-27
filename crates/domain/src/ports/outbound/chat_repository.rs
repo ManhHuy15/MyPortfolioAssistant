@@ -16,4 +16,7 @@ pub trait ChatRepositoryPort {
     async fn fetch_chunks_by_ids(&self, ids: &[String])
     -> Result<Vec<KnowledgeChunk>, DomainError>;
     async fn fetch_recent_chunks(&self, limit: usize) -> Result<Vec<KnowledgeChunk>, DomainError>;
+    async fn list_chunks(&self) -> Result<Vec<KnowledgeChunk>, DomainError>;
+    async fn find_chunk_ids_by_target(&self, target: &str) -> Result<Vec<String>, DomainError>;
+    async fn delete_chunks_by_ids(&self, ids: &[String]) -> Result<(), DomainError>;
 }

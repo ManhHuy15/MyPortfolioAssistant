@@ -25,4 +25,6 @@ pub trait VectorIndexPort {
         vector: &[f32],
         top_k: usize,
     ) -> Result<Vec<VectorMatch>, DomainError>;
+
+    async fn delete_vectors_by_ids(&self, ids: &[String]) -> Result<(), DomainError>;
 }
