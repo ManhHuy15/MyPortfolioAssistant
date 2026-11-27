@@ -69,6 +69,9 @@ MyPortfolioAssistant/
 | `RAG_FALLBACK_LIMIT` | `10` | Số chunk D1 fallback khi không có vector đạt ngưỡng |
 | `RAG_RECENT_MESSAGES` | `4` | Số tin nhắn gần nhất dùng để rewrite câu hỏi |
 | `RAG_CACHE_TTL_SECONDS` | `86400` | Thời gian cache câu trả lời trên KV (giây) |
+| `RATE_LIMIT_WINDOW_SECONDS` | `60` | Cửa sổ thời gian tính rate limit (giây) |
+| `RATE_LIMIT_IP_MAX` | `20` | Số request tối đa mỗi IP trong 1 cửa sổ (`0` để tắt) |
+| `RATE_LIMIT_SESSION_MAX` | `10` | Số request tối đa mỗi `sessionId` trong 1 cửa sổ (`0` để tắt) |
 
 ### 2. Secret `API_KEY`
 

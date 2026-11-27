@@ -1,4 +1,4 @@
-use common::config::{AiConfig, RagConfig};
+use common::config::{AiConfig, RagConfig, RateLimitConfig};
 use common::response::ApiResponse;
 
 #[test]
@@ -18,6 +18,14 @@ fn test_default_rag_config() {
     assert_eq!(cfg.fallback_limit, 10);
     assert_eq!(cfg.recent_messages_limit, 4);
     assert_eq!(cfg.cache_ttl_seconds, 86_400);
+}
+
+#[test]
+fn test_default_rate_limit_config() {
+    let cfg = RateLimitConfig::default();
+    assert_eq!(cfg.window_seconds, 60);
+    assert_eq!(cfg.max_requests_per_ip, 20);
+    assert_eq!(cfg.max_requests_per_session, 10);
 }
 
 #[test]

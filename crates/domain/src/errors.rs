@@ -8,6 +8,12 @@ pub enum DomainError {
     #[error("Not found: {0}")]
     NotFound(String),
 
+    #[error("Rate limited (retry after {retry_after_seconds}s): {message}")]
+    RateLimited {
+        retry_after_seconds: u64,
+        message: String,
+    },
+
     #[error("Storage error: {0}")]
     Storage(String),
 

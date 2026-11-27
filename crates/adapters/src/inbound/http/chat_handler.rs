@@ -69,6 +69,16 @@ pub async fn handle_chat(
                 ApiResponse::<()>::error("VALIDATION_FAILED", message, Some(field), trace_id);
             json_response(400, &err_env)
         }
+        Err(DomainError::RateLimited {
+            retry_after_seconds,
+            message,
+        }) => {
+            let err_env = ApiResponse::<()>::error("RATE_LIMITED", message, None, trace_id);
+            let mut resp = json_response(429, &err_env)?;
+            resp.headers_mut()
+                .set("Retry-After", &retry_after_seconds.to_string())?;
+            Ok(resp)
+        }
         Err(err) => {
             let err_env =
                 ApiResponse::<()>::error("INTERNAL_ERROR", err.to_string(), None, trace_id);

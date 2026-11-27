@@ -1,4 +1,5 @@
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::rc::Rc;
 
 use application::use_cases::ask_portfolio::AskPortfolioUseCase;
@@ -6,7 +7,7 @@ use application::use_cases::ingest_markdown::IngestMarkdownUseCase;
 use application::use_cases::manage_knowledge::ManageKnowledgeUseCase;
 use application::use_cases::markdown_chunker::chunk_markdown;
 use async_trait::async_trait;
-use common::config::RagConfig;
+use common::config::{RagConfig, RateLimitConfig};
 use domain::entities::{CachedAnswer, ChatMessageRecord, KnowledgeChunk, SessionMeta};
 use domain::errors::DomainError;
 use domain::ports::inbound::{
@@ -14,8 +15,8 @@ use domain::ports::inbound::{
     IngestMarkdownUseCasePort, ManageKnowledgeUseCasePort,
 };
 use domain::ports::outbound::{
-    AiCompletionPort, AnswerCachePort, ChatRepositoryPort, TokenStream, VectorIndexPort,
-    VectorMatch, VectorRecord,
+    AiCompletionPort, AnswerCachePort, ChatRepositoryPort, RateLimitDecision, RateLimiterPort,
+    TokenStream, VectorIndexPort, VectorMatch, VectorRecord,
 };
 use futures::executor::block_on;
 use futures_util::StreamExt;
@@ -152,6 +153,38 @@ impl AnswerCachePort for MockCache {
     }
 }
 
+#[derive(Default)]
+struct MockRateLimiter {
+    counts: RefCell<HashMap<String, u32>>,
+}
+
+#[async_trait(?Send)]
+impl RateLimiterPort for MockRateLimiter {
+    async fn check_and_increment(
+        &self,
+        key: &str,
+        max_requests: u32,
+        window_seconds: u64,
+    ) -> Result<RateLimitDecision, DomainError> {
+        let mut map = self.counts.borrow_mut();
+        let count = map.entry(key.to_string()).or_insert(0);
+        if *count >= max_requests {
+            Ok(RateLimitDecision {
+                allowed: false,
+                remaining: 0,
+                retry_after_seconds: window_seconds,
+            })
+        } else {
+            *count += 1;
+            Ok(RateLimitDecision {
+                allowed: true,
+                remaining: max_requests - *count,
+                retry_after_seconds: window_seconds,
+            })
+        }
+    }
+}
+
 struct MockAi {
     response: String,
 }
@@ -200,7 +233,16 @@ fn test_validation_empty_message() {
     let ai = Rc::new(MockAi {
         response: "Hi".to_string(),
     });
-    let use_case = AskPortfolioUseCase::new(repo, vector_index, cache, ai, RagConfig::default());
+    let rate_limiter = Rc::new(MockRateLimiter::default());
+    let use_case = AskPortfolioUseCase::new(
+        repo,
+        vector_index,
+        cache,
+        ai,
+        rate_limiter,
+        RagConfig::default(),
+        RateLimitConfig::default(),
+    );
 
     let cmd = AskPortfolioCommand {
         session: SessionMeta {
@@ -250,8 +292,16 @@ fn test_ask_portfolio_rag_with_vectorize_and_cache() {
     let ai = Rc::new(MockAi {
         response: "Huy đã làm dự án YuhTube.".to_string(),
     });
-    let use_case =
-        AskPortfolioUseCase::new(repo.clone(), vector_index, cache, ai, RagConfig::default());
+    let rate_limiter = Rc::new(MockRateLimiter::default());
+    let use_case = AskPortfolioUseCase::new(
+        repo.clone(),
+        vector_index,
+        cache,
+        ai,
+        rate_limiter,
+        RagConfig::default(),
+        RateLimitConfig::default(),
+    );
 
     let cmd = AskPortfolioCommand {
         session: SessionMeta {
@@ -367,12 +417,15 @@ fn test_ask_portfolio_stream_tokens_and_final_done_event() {
     let ai = Rc::new(MockAi {
         response: "Huy làm dự án YuhTube.".to_string(),
     });
+    let rate_limiter = Rc::new(MockRateLimiter::default());
     let use_case = AskPortfolioUseCase::new(
         repo.clone(),
         vector_index,
         cache.clone(),
         ai,
+        rate_limiter,
         RagConfig::default(),
+        RateLimitConfig::default(),
     );
 
     let cmd = AskPortfolioCommand {
@@ -466,4 +519,59 @@ fn test_manage_knowledge_list_and_delete_by_prefix_and_not_found() {
 
     let missing = block_on(use_case.delete_by_target("portfolio"));
     assert!(matches!(missing, Err(DomainError::NotFound(_))));
+}
+
+#[test]
+fn test_rate_limit_blocks_by_session_and_by_ip() {
+    let repo = Rc::new(MockRepo::default());
+    let vector_index = Rc::new(MockVectorIndex::default());
+    let cache = Rc::new(MockCache::default());
+    let ai = Rc::new(MockAi {
+        response: "OK".to_string(),
+    });
+    let rate_limiter = Rc::new(MockRateLimiter::default());
+    let rl_cfg = RateLimitConfig {
+        window_seconds: 60,
+        max_requests_per_ip: 3,
+        max_requests_per_session: 2,
+    };
+    let use_case = AskPortfolioUseCase::new(
+        repo,
+        vector_index,
+        cache,
+        ai,
+        rate_limiter,
+        RagConfig::default(),
+        rl_cfg,
+    );
+
+    let make_cmd = |session_id: &str, ip: &str| AskPortfolioCommand {
+        session: SessionMeta {
+            session_id: session_id.to_string(),
+            ip_address: ip.to_string(),
+            country: "VN".to_string(),
+            user_agent: None,
+        },
+        question: "Hello".to_string(),
+    };
+
+    // Session A: 2 requests allowed, 3rd blocked by session limit
+    assert!(block_on(use_case.execute(make_cmd("sess-a", "1.1.1.1"))).is_ok());
+    assert!(block_on(use_case.execute(make_cmd("sess-a", "1.1.1.1"))).is_ok());
+    let session_blocked = block_on(use_case.execute(make_cmd("sess-a", "1.1.1.1")));
+    assert!(matches!(
+        session_blocked,
+        Err(DomainError::RateLimited {
+            retry_after_seconds: 60,
+            ..
+        })
+    ));
+
+    // Even if attacker switches to a fresh session ID from same IP 1.1.1.1:
+    // IP already used 3 slots (2 + 1 before session check), so 4th request is blocked by IP limit
+    let ip_blocked = block_on(use_case.execute(make_cmd("sess-b", "1.1.1.1")));
+    assert!(matches!(ip_blocked, Err(DomainError::RateLimited { .. })));
+
+    // Different IP + different session is still allowed
+    assert!(block_on(use_case.execute(make_cmd("sess-c", "2.2.2.2"))).is_ok());
 }

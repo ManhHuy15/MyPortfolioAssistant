@@ -9,6 +9,10 @@ pub const DEFAULT_RAG_FALLBACK_LIMIT: usize = 10;
 pub const DEFAULT_RAG_RECENT_MESSAGES: usize = 4;
 pub const DEFAULT_RAG_CACHE_TTL_SECONDS: u64 = 86_400;
 
+pub const DEFAULT_RATE_LIMIT_WINDOW_SECONDS: u64 = 60;
+pub const DEFAULT_RATE_LIMIT_IP_MAX: u32 = 20;
+pub const DEFAULT_RATE_LIMIT_SESSION_MAX: u32 = 10;
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct AiConfig {
     pub embedding_model: String,
@@ -45,6 +49,23 @@ impl Default for RagConfig {
             fallback_limit: DEFAULT_RAG_FALLBACK_LIMIT,
             recent_messages_limit: DEFAULT_RAG_RECENT_MESSAGES,
             cache_ttl_seconds: DEFAULT_RAG_CACHE_TTL_SECONDS,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RateLimitConfig {
+    pub window_seconds: u64,
+    pub max_requests_per_ip: u32,
+    pub max_requests_per_session: u32,
+}
+
+impl Default for RateLimitConfig {
+    fn default() -> Self {
+        Self {
+            window_seconds: DEFAULT_RATE_LIMIT_WINDOW_SECONDS,
+            max_requests_per_ip: DEFAULT_RATE_LIMIT_IP_MAX,
+            max_requests_per_session: DEFAULT_RATE_LIMIT_SESSION_MAX,
         }
     }
 }

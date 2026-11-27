@@ -213,20 +213,27 @@
         "requestBody": {
           "required": true,
           "content": {
-            "application/json": {
-              "schema": { "$ref": "#/components/schemas/IngestMarkdownRequestDto" }
-            },
             "multipart/form-data": {
               "schema": {
                 "type": "object",
-                "required": ["file"],
+                "required": ["file", "category"],
                 "properties": {
-                  "docIdPrefix": { "type": "string", "example": "portfolio" },
-                  "defaultDocTitle": { "type": "string", "example": "Hồ sơ Mạnh Huy" },
-                  "category": { "type": "string", "example": "profile" },
-                  "file": { "type": "string", "format": "binary" }
+                  "file": {
+                    "type": "string",
+                    "format": "binary",
+                    "description": "Upload file Markdown (.md). ID tự lấy theo tên file, tiêu đề tự lấy theo heading `#` trong file."
+                  },
+                  "category": {
+                    "type": "string",
+                    "enum": ["profile", "project", "skill", "experience", "education", "blog", "general"],
+                    "default": "profile",
+                    "description": "Phân loại nội dung kiến thức"
+                  }
                 }
               }
+            },
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/IngestMarkdownRequestDto" }
             },
             "text/markdown": {
               "schema": {
@@ -366,6 +373,20 @@
           },
           "401": {
             "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ApiErrorResponse" }
+              }
+            }
+          },
+          "429": {
+            "description": "Too Many Requests (IP or session rate limit exceeded)",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until rate limit window resets",
+                "schema": { "type": "integer", "example": 45 }
+              }
+            },
             "content": {
               "application/json": {
                 "schema": { "$ref": "#/components/schemas/ApiErrorResponse" }

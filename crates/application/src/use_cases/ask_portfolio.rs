@@ -1,7 +1,7 @@
 use std::rc::Rc;
 
 use async_trait::async_trait;
-use common::config::RagConfig;
+use common::config::{RagConfig, RateLimitConfig};
 use domain::entities::{CachedAnswer, ChatMessageRecord, MessageRole};
 use domain::errors::DomainError;
 use domain::ports::inbound::{
@@ -9,7 +9,8 @@ use domain::ports::inbound::{
     ChatStreamEvent,
 };
 use domain::ports::outbound::{
-    AiCompletionPort, AnswerCachePort, ChatRepositoryPort, TokenStream, VectorIndexPort,
+    AiCompletionPort, AnswerCachePort, ChatRepositoryPort, RateLimiterPort, TokenStream,
+    VectorIndexPort,
 };
 use futures_util::StreamExt;
 
@@ -43,7 +44,9 @@ pub struct AskPortfolioUseCase {
     vector_index: Rc<dyn VectorIndexPort>,
     cache: Rc<dyn AnswerCachePort>,
     ai: Rc<dyn AiCompletionPort>,
+    rate_limiter: Rc<dyn RateLimiterPort>,
     rag_config: RagConfig,
+    rate_limit_config: RateLimitConfig,
 }
 
 impl AskPortfolioUseCase {
@@ -52,14 +55,18 @@ impl AskPortfolioUseCase {
         vector_index: Rc<dyn VectorIndexPort>,
         cache: Rc<dyn AnswerCachePort>,
         ai: Rc<dyn AiCompletionPort>,
+        rate_limiter: Rc<dyn RateLimiterPort>,
         rag_config: RagConfig,
+        rate_limit_config: RateLimitConfig,
     ) -> Self {
         Self {
             repo,
             vector_index,
             cache,
             ai,
+            rate_limiter,
             rag_config,
+            rate_limit_config,
         }
     }
 
@@ -87,6 +94,47 @@ impl AskPortfolioUseCase {
             return Err(DomainError::Validation {
                 field: "message".to_string(),
                 message: "Message cannot be empty".to_string(),
+            });
+        }
+
+        // 0. Enforce per-IP and per-session rate limits before touching D1/AI
+        let ip_key = format!("rl:ip:{}", cmd.session.ip_address.trim());
+        if let Ok(decision) = self
+            .rate_limiter
+            .check_and_increment(
+                &ip_key,
+                self.rate_limit_config.max_requests_per_ip,
+                self.rate_limit_config.window_seconds,
+            )
+            .await
+            && !decision.allowed
+        {
+            return Err(DomainError::RateLimited {
+                retry_after_seconds: decision.retry_after_seconds,
+                message: format!(
+                    "Quá nhiều yêu cầu từ địa chỉ IP này. Vui lòng thử lại sau {} giây.",
+                    decision.retry_after_seconds
+                ),
+            });
+        }
+
+        let session_key = format!("rl:session:{session_id}");
+        if let Ok(decision) = self
+            .rate_limiter
+            .check_and_increment(
+                &session_key,
+                self.rate_limit_config.max_requests_per_session,
+                self.rate_limit_config.window_seconds,
+            )
+            .await
+            && !decision.allowed
+        {
+            return Err(DomainError::RateLimited {
+                retry_after_seconds: decision.retry_after_seconds,
+                message: format!(
+                    "Bạn đang gửi tin nhắn quá nhanh trong phiên chat này. Vui lòng thử lại sau {} giây.",
+                    decision.retry_after_seconds
+                ),
             });
         }
 

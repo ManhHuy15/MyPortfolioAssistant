@@ -6,12 +6,12 @@ use adapters::inbound::http::{
     verify_api_key,
 };
 use adapters::outbound::persistence::{
-    D1ChatRepository, KvAnswerCache, VectorizeIndexAdapter, WorkersAiCompletion,
+    D1ChatRepository, KvAnswerCache, KvRateLimiter, VectorizeIndexAdapter, WorkersAiCompletion,
 };
 use application::use_cases::ask_portfolio::AskPortfolioUseCase;
 use application::use_cases::ingest_markdown::IngestMarkdownUseCase;
 use application::use_cases::manage_knowledge::ManageKnowledgeUseCase;
-use common::config::{AiConfig, RagConfig};
+use common::config::{AiConfig, RagConfig, RateLimitConfig};
 use worker::*;
 
 fn load_ai_config(env: &Env) -> AiConfig {
@@ -74,6 +74,29 @@ fn load_rag_config(env: &Env) -> RagConfig {
         && parsed > 0
     {
         cfg.cache_ttl_seconds = parsed;
+    }
+
+    cfg
+}
+
+fn load_rate_limit_config(env: &Env) -> RateLimitConfig {
+    let mut cfg = RateLimitConfig::default();
+
+    if let Ok(val) = env.var("RATE_LIMIT_WINDOW_SECONDS")
+        && let Ok(parsed) = val.to_string().parse::<u64>()
+        && parsed > 0
+    {
+        cfg.window_seconds = parsed;
+    }
+    if let Ok(val) = env.var("RATE_LIMIT_IP_MAX")
+        && let Ok(parsed) = val.to_string().parse::<u32>()
+    {
+        cfg.max_requests_per_ip = parsed;
+    }
+    if let Ok(val) = env.var("RATE_LIMIT_SESSION_MAX")
+        && let Ok(parsed) = val.to_string().parse::<u32>()
+    {
+        cfg.max_requests_per_session = parsed;
     }
 
     cfg
@@ -151,16 +174,19 @@ pub async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
 
 fn build_ask_use_case(env: &Env) -> Result<AskPortfolioUseCase> {
     let db = env.d1("DB")?;
-    let kv = env.kv("CACHE_KV")?;
+    let kv_cache = env.kv("CACHE_KV")?;
+    let kv_rl = env.kv("CACHE_KV")?;
     let ai = env.ai("AI")?;
     let vectorize = VectorizeIndexAdapter::from_env(env, "VECTORIZE")
         .map_err(|e| Error::RustError(e.to_string()))?;
     let ai_config = load_ai_config(env);
     let rag_config = load_rag_config(env);
+    let rate_limit_config = load_rate_limit_config(env);
 
     let repo = Rc::new(D1ChatRepository::new(db));
     let vector_index = Rc::new(vectorize);
-    let cache = Rc::new(KvAnswerCache::new(kv));
+    let cache = Rc::new(KvAnswerCache::new(kv_cache));
+    let rate_limiter = Rc::new(KvRateLimiter::new(kv_rl));
     let ai_adapter = Rc::new(WorkersAiCompletion::new(ai, ai_config));
 
     Ok(AskPortfolioUseCase::new(
@@ -168,7 +194,9 @@ fn build_ask_use_case(env: &Env) -> Result<AskPortfolioUseCase> {
         vector_index,
         cache,
         ai_adapter,
+        rate_limiter,
         rag_config,
+        rate_limit_config,
     ))
 }
 
