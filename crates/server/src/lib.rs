@@ -1,9 +1,10 @@
 use std::rc::Rc;
 
 use adapters::inbound::http::{
-    handle_chat, handle_chat_stream, handle_delete_knowledge, handle_health,
-    handle_ingest_markdown, handle_list_chunks, handle_openapi_spec, handle_swagger_ui,
-    verify_chat_api_key, verify_master_api_key,
+    apply_cors_headers, handle_chat, handle_chat_stream, handle_cors_preflight,
+    handle_delete_knowledge, handle_health, handle_ingest_markdown, handle_list_chunks,
+    handle_openapi_spec, handle_swagger_ui, load_allowed_origins, verify_chat_api_key,
+    verify_master_api_key,
 };
 use adapters::outbound::persistence::{
     D1ChatRepository, KvAnswerCache, KvRateLimiter, VectorizeIndexAdapter, WorkersAiCompletion,
@@ -106,9 +107,16 @@ fn load_rate_limit_config(env: &Env) -> RateLimitConfig {
 pub async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
     console_error_panic_hook::set_once();
 
+    if req.method() == Method::Options {
+        return handle_cors_preflight(&req, &env);
+    }
+
+    let req_origin = req.headers().get("origin").ok().flatten();
+    let allowed_origins = load_allowed_origins(&env);
+
     let router = Router::new();
 
-    router
+    let mut resp = router
         .get_async("/docs", |_req, _ctx| async move { handle_swagger_ui() })
         .get_async("/api/openapi.json", |_req, _ctx| async move {
             handle_openapi_spec()
@@ -171,7 +179,10 @@ pub async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
             handle_chat_stream(req, &use_case).await
         })
         .run(req, env)
-        .await
+        .await?;
+
+    apply_cors_headers(&mut resp, req_origin.as_deref(), &allowed_origins)?;
+    Ok(resp)
 }
 
 fn build_ask_use_case(env: &Env) -> Result<AskPortfolioUseCase> {

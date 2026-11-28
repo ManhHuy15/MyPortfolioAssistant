@@ -1,6 +1,7 @@
 pub mod auth;
 pub mod chat_handler;
 pub mod chat_stream_handler;
+pub mod cors;
 pub mod health_handler;
 pub mod knowledge_handler;
 pub mod markdown_handler;
@@ -12,6 +13,7 @@ pub use auth::{
 };
 pub use chat_handler::handle_chat;
 pub use chat_stream_handler::handle_chat_stream;
+pub use cors::{apply_cors_headers, handle_cors_preflight, load_allowed_origins};
 pub use health_handler::handle_health;
 pub use knowledge_handler::{handle_delete_knowledge, handle_list_chunks};
 pub use markdown_handler::handle_ingest_markdown;
