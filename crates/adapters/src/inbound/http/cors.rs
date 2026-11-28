@@ -13,12 +13,16 @@ pub fn resolve_allowed_origin(req_origin: Option<&str>, allowed_origins: &str) -
         return Some("*".to_string());
     }
 
-    let origin = req_origin?.trim();
+    let origin = req_origin?.trim().trim_end_matches('/');
     if origin.is_empty() {
         return None;
     }
 
-    for candidate in allowed.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+    for candidate in allowed
+        .split(',')
+        .map(|s| s.trim().trim_end_matches('/'))
+        .filter(|s| !s.is_empty())
+    {
         if candidate == "*" {
             return Some("*".to_string());
         }

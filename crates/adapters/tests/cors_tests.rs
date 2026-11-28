@@ -11,7 +11,7 @@ fn resolve_allowed_origin_supports_wildcard_default() {
 
 #[test]
 fn resolve_allowed_origin_matches_explicit_allowlist() {
-    let allowlist = "https://huy.dev, http://localhost:3000";
+    let allowlist = "https://huy.dev, http://localhost:3000/";
 
     assert_eq!(
         resolve_allowed_origin(Some("https://huy.dev"), allowlist),
