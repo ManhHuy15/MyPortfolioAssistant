@@ -73,17 +73,22 @@ MyPortfolioAssistant/
 | `RATE_LIMIT_IP_MAX` | `20` | Số request tối đa mỗi IP trong 1 cửa sổ (`0` để tắt) |
 | `RATE_LIMIT_SESSION_MAX` | `10` | Số request tối đa mỗi `sessionId` trong 1 cửa sổ (`0` để tắt) |
 
-### 2. Secret `API_KEY`
+### 2. Secrets `API_KEY` & `MASTER_API_KEY`
 
-Tạo 1 API key ngẫu nhiên mạnh:
+Hệ thống phân quyền 2 mức API key (cùng gửi qua header `X-API-Key`):
+- **`API_KEY`** *(Chat-only)*: chỉ được gọi các endpoint chat (`/api/chat`, `/api/chat/stream`). Dùng cho Frontend/Next.js server-side. Nếu dùng gọi API quản lý knowledge sẽ trả **HTTP 403** (`FORBIDDEN`).
+- **`MASTER_API_KEY`** *(Full quyền)*: truy cập toàn bộ API bao gồm quản lý knowledge (`/api/chunks`, `/api/chunks/markdown`, `/api/chunks/:target`) và chat.
+
+Tạo 2 key ngẫu nhiên mạnh:
 ```bash
 openssl rand -hex 32
 ```
 
-- **Local dev**: copy `.dev.vars.example` thành `.dev.vars` (đã nằm trong `.gitignore`) và điền `API_KEY=...`.
+- **Local dev**: copy `.dev.vars.example` thành `.dev.vars` (đã nằm trong `.gitignore`) và điền `API_KEY=...`, `MASTER_API_KEY=...`.
 - **Cloudflare Production**:
   ```bash
   npx wrangler secret put API_KEY
+  npx wrangler secret put MASTER_API_KEY
   ```
 
 ---

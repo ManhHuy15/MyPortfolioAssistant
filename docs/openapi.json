@@ -22,7 +22,7 @@
         "type": "apiKey",
         "in": "header",
         "name": "X-API-Key",
-        "description": "API key configured in Cloudflare secret `API_KEY` (or `.dev.vars` locally)."
+        "description": "API key configured in Cloudflare secrets (`API_KEY` for chat-only endpoints, `MASTER_API_KEY` for full access including knowledge management)."
       }
     },
     "schemas": {
@@ -200,6 +200,14 @@
                 "schema": { "$ref": "#/components/schemas/ApiErrorResponse" }
               }
             }
+          },
+          "403": {
+            "description": "Forbidden (requires MASTER_API_KEY)",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ApiErrorResponse" }
+              }
+            }
           }
         }
       }
@@ -276,6 +284,14 @@
                 "schema": { "$ref": "#/components/schemas/ApiErrorResponse" }
               }
             }
+          },
+          "403": {
+            "description": "Forbidden (requires MASTER_API_KEY)",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ApiErrorResponse" }
+              }
+            }
           }
         }
       }
@@ -315,6 +331,14 @@
           },
           "401": {
             "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ApiErrorResponse" }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden (requires MASTER_API_KEY)",
             "content": {
               "application/json": {
                 "schema": { "$ref": "#/components/schemas/ApiErrorResponse" }

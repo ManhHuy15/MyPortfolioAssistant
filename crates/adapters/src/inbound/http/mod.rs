@@ -7,7 +7,9 @@ pub mod markdown_handler;
 pub mod response;
 pub mod swagger_handler;
 
-pub use auth::verify_api_key;
+pub use auth::{
+    ApiKeyRole, RequiredPermission, verify_api_key, verify_chat_api_key, verify_master_api_key,
+};
 pub use chat_handler::handle_chat;
 pub use chat_stream_handler::handle_chat_stream;
 pub use health_handler::handle_health;

@@ -3,7 +3,7 @@ use std::rc::Rc;
 use adapters::inbound::http::{
     handle_chat, handle_chat_stream, handle_delete_knowledge, handle_health,
     handle_ingest_markdown, handle_list_chunks, handle_openapi_spec, handle_swagger_ui,
-    verify_api_key,
+    verify_chat_api_key, verify_master_api_key,
 };
 use adapters::outbound::persistence::{
     D1ChatRepository, KvAnswerCache, KvRateLimiter, VectorizeIndexAdapter, WorkersAiCompletion,
@@ -118,7 +118,7 @@ pub async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
             |req, _ctx| async move { handle_health(&req) },
         )
         .get_async("/api/chunks", |req, ctx| async move {
-            if let Err(resp) = verify_api_key(&req, &ctx.env) {
+            if let Err(resp) = verify_master_api_key(&req, &ctx.env) {
                 return Ok(resp);
             }
 
@@ -126,7 +126,7 @@ pub async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
             handle_list_chunks(&req, &use_case).await
         })
         .delete_async("/api/chunks/:target", |req, ctx| async move {
-            if let Err(resp) = verify_api_key(&req, &ctx.env) {
+            if let Err(resp) = verify_master_api_key(&req, &ctx.env) {
                 return Ok(resp);
             }
 
@@ -135,7 +135,7 @@ pub async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
             handle_delete_knowledge(&req, target, &use_case).await
         })
         .post_async("/api/chunks/markdown", |req, ctx| async move {
-            if let Err(resp) = verify_api_key(&req, &ctx.env) {
+            if let Err(resp) = verify_master_api_key(&req, &ctx.env) {
                 return Ok(resp);
             }
 
@@ -155,7 +155,7 @@ pub async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
             handle_ingest_markdown(req, &use_case).await
         })
         .post_async("/api/chat", |req, ctx| async move {
-            if let Err(resp) = verify_api_key(&req, &ctx.env) {
+            if let Err(resp) = verify_chat_api_key(&req, &ctx.env) {
                 return Ok(resp);
             }
 
@@ -163,7 +163,7 @@ pub async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
             handle_chat(req, &use_case).await
         })
         .post_async("/api/chat/stream", |req, ctx| async move {
-            if let Err(resp) = verify_api_key(&req, &ctx.env) {
+            if let Err(resp) = verify_chat_api_key(&req, &ctx.env) {
                 return Ok(resp);
             }
 
